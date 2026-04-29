@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Smooth Realtime Board - Final Fix</title>
+    <title>Realtime Board - Multi-User Fixed</title>
     <style>
         body { margin: 0; display: flex; justify-content: center; align-items: center; background: #222; height: 100vh; overflow: hidden; touch-action: none; font-family: sans-serif; }
         #toolbar { 
@@ -23,8 +23,6 @@
             pointer-events: none; display: none; z-index: 15; transform: translate(-50%, -50%);
             background: rgba(0,0,0,0.05);
         }
-        .drawing-mode { cursor: crosshair; }
-        .panning-mode { cursor: grab !important; }
         .btn { padding: 8px 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 6px; background: white; font-size: 12px; font-weight: bold; }
         .active { background: #3498db !important; color: white !important; }
         kbd { background: #eee; border-radius: 3px; padding: 2px 4px; border: 1px solid #ccc; font-size: 10px; }
@@ -74,6 +72,8 @@
         let sizes = { pen: 5, eraser: 40 };
         let isSpaceDown = false, isPanning = false, startX, startY;
 
+        // --- BIẾN ĐỊNH DANH NÉT VẼ ---
+        let currentStrokeId = null;
         let touchStartPos = null;
         let isDrawingPending = false;
 
@@ -115,6 +115,10 @@
             };
         }
 
+        function generateStrokeId() {
+            return Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+        }
+
         // --- MÁY TÍNH ---
         window.addEventListener('wheel', e => {
             e.preventDefault();
@@ -129,12 +133,12 @@
         }, { passive: false });
 
         window.addEventListener('keydown', e => {
-            if (e.code === 'Space') { e.preventDefault(); isSpaceDown = true; document.body.className = 'panning-mode'; cursorPrev.style.display = 'none'; }
+            if (e.code === 'Space') { e.preventDefault(); isSpaceDown = true; cursorPrev.style.display = 'none'; }
             if (e.key.toLowerCase() === 'q') { mode = (mode === 'pen' ? 'eraser' : 'pen'); updateToolUI(); }
         });
 
         window.addEventListener('keyup', e => {
-            if (e.code === 'Space') { isSpaceDown = false; isPanning = false; document.body.className = 'drawing-mode'; }
+            if (e.code === 'Space') { isSpaceDown = false; isPanning = false; }
         });
 
         window.addEventListener('mousedown', e => {
@@ -142,7 +146,10 @@
             if (isSpaceDown) {
                 isPanning = true; startX = e.clientX - offsetX; startY = e.clientY - offsetY;
             } else if (e.target === canvas) {
-                drawing = true; db.push({ type: 'start' }); sendPoint(getPos(e));
+                drawing = true;
+                currentStrokeId = generateStrokeId();
+                db.push({ type: 'start', strokeId: currentStrokeId });
+                sendPoint(getPos(e));
             }
         });
 
@@ -159,12 +166,18 @@
             if (drawing) sendPoint(pos);
         });
 
-        window.addEventListener('mouseup', () => { drawing = false; isPanning = false; });
+        window.addEventListener('mouseup', () => { drawing = false; isPanning = false; currentStrokeId = null; });
 
         function sendPoint(pos) {
-            if(!pos) return;
+            if(!pos || !currentStrokeId) return;
             const color = mode === 'eraser' ? '#ffffff' : document.getElementById('colorPicker').value;
-            db.push({ x: pos.x, y: pos.y, color: color, size: sizes[mode] });
+            db.push({ 
+                x: pos.x, 
+                y: pos.y, 
+                color: color, 
+                size: sizes[mode], 
+                strokeId: currentStrokeId // Gửi kèm ID nét vẽ
+            });
         }
 
         // --- CẢM ỨNG ---
@@ -179,16 +192,15 @@
                 if (e.target === canvas) {
                     isDrawingPending = true;
                     touchStartPos = getPos(e);
-                    // Hiển thị vòng tròn preview khi chạm vào
+                    currentStrokeId = generateStrokeId();
                     cursorPrev.style.display = "block";
                     cursorPrev.style.left = touchStartPos.rawX + "px"; 
                     cursorPrev.style.top = touchStartPos.rawY + "px";
                 }
             } else if (e.touches.length === 2) {
                 e.preventDefault();
-                isDrawingPending = false;
-                drawing = false;
-                cursorPrev.style.display = "none"; // Ẩn preview khi zoom
+                isDrawingPending = false; drawing = false; currentStrokeId = null;
+                cursorPrev.style.display = "none";
                 initialDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
                 lastMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -202,7 +214,6 @@
                 const curMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 const curMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
                 const curDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-
                 if (initialDist > 0) {
                     let ratio = curDist / initialDist;
                     let delta = 1 + (ratio - 1) * zoomSensitivity; 
@@ -213,23 +224,16 @@
                     offsetY = curMidY - (lastMidY - offsetY) * actualDelta;
                     updateTransform();
                 }
-                initialDist = curDist;
-                lastMidX = curMidX;
-                lastMidY = curMidY;
+                initialDist = curDist; lastMidX = curMidX; lastMidY = curMidY;
             } else if (e.touches.length === 1) {
                 const pos = getPos(e);
                 if (!pos) return;
-
-                // Cập nhật vị trí vòng tròn preview theo tay
-                cursorPrev.style.left = pos.rawX + "px"; 
-                cursorPrev.style.top = pos.rawY + "px";
-                
+                cursorPrev.style.left = pos.rawX + "px"; cursorPrev.style.top = pos.rawY + "px";
                 if (isDrawingPending && touchStartPos) {
                     const dist = Math.hypot(pos.screenX - touchStartPos.screenX, pos.screenY - touchStartPos.screenY);
                     if (dist > 4) {
-                        isDrawingPending = false;
-                        drawing = true;
-                        db.push({ type: 'start' });
+                        isDrawingPending = false; drawing = true;
+                        db.push({ type: 'start', strokeId: currentStrokeId });
                         sendPoint(touchStartPos);
                     }
                 } else if (drawing) {
@@ -240,65 +244,73 @@
 
         const endTouch = () => {
             if (isDrawingPending && touchStartPos) {
-                db.push({ type: 'start' });
+                db.push({ type: 'start', strokeId: currentStrokeId });
                 sendPoint(touchStartPos);
             }
-            drawing = false; 
-            isDrawingPending = false;
-            touchStartPos = null;
-            initialDist = 0; 
-            cursorPrev.style.display = "none"; // FIX: Ẩn vòng tròn khi nhấc tay
+            drawing = false; isDrawingPending = false; touchStartPos = null; initialDist = 0;
+            currentStrokeId = null; cursorPrev.style.display = "none";
         };
 
         window.addEventListener('touchend', endTouch);
         window.addEventListener('touchcancel', endTouch);
 
-        // --- FIREBASE SYNC (FIX LỖI HIỂN THỊ CHẤM) ---
-        let currentStrokePoints = []; 
+        // --- HỆ THỐNG VẼ ĐA NGƯỜI DÙNG (FIXED) ---
+        let allStrokes = {}; // Lưu trữ điểm của từng nét vẽ riêng biệt
+
         db.on('child_added', (snapshot) => {
             const data = snapshot.val();
+            const sid = data.strokeId;
+
             if (data.type === 'start') { 
-                ctx.beginPath(); 
-                currentStrokePoints = []; 
+                allStrokes[sid] = []; // Khởi tạo mảng điểm mới cho nét vẽ này
                 return; 
             }
 
-            currentStrokePoints.push(data);
+            // Nếu dữ liệu điểm tới trước lệnh 'start' (hiếm gặp), vẫn phải khởi tạo
+            if (!allStrokes[sid]) allStrokes[sid] = [];
+            
+            allStrokes[sid].push(data);
+            const pts = allStrokes[sid];
+
+            // Thiết lập màu và cỡ bút cho nét vẽ cụ thể này
             ctx.lineWidth = data.size; 
             ctx.lineCap = 'round'; 
             ctx.lineJoin = 'round'; 
             ctx.strokeStyle = data.color;
 
-            // FIX: Nếu chỉ có 1 điểm (dấu chấm), vẽ một hình tròn nhỏ ngay lập tức
-            if (currentStrokePoints.length === 1) {
-                ctx.beginPath();
+            // Mỗi khi vẽ một đoạn, phải dùng beginPath để không nối nhầm vào nét của người khác
+            ctx.beginPath();
+
+            if (pts.length === 1) {
                 ctx.arc(data.x, data.y, data.size / 2, 0, Math.PI * 2);
                 ctx.fillStyle = data.color;
                 ctx.fill();
-                ctx.beginPath(); // Reset lại path để chuẩn bị cho lineTo tiếp theo nếu có
-                ctx.moveTo(data.x, data.y);
             } 
-            // Nếu có 2 điểm, vẽ đường thẳng nối
-            else if (currentStrokePoints.length === 2) {
-                ctx.lineTo(data.x, data.y);
+            else if (pts.length === 2) {
+                ctx.moveTo(pts[0].x, pts[0].y);
+                ctx.lineTo(pts[1].x, pts[1].y);
                 ctx.stroke();
             }
-            // Nếu từ 3 điểm trở lên, dùng Quadratic Curve để làm mượt
             else {
-                const i = currentStrokePoints.length - 2;
-                const p1 = currentStrokePoints[i], p2 = currentStrokePoints[i + 1];
-                const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+                // Thuật toán làm mượt dựa trên điểm trước đó của CHÍNH nét vẽ này
+                const i = pts.length - 2;
+                const p1 = pts[i], p2 = pts[i + 1];
+                const p0 = pts[i - 1];
+                const midPrevX = (p0.x + p1.x) / 2;
+                const midPrevY = (p0.y + p1.y) / 2;
+                const midX = (p1.x + p2.x) / 2;
+                const midY = (p1.y + p2.y) / 2;
+
+                ctx.moveTo(midPrevX, midPrevY);
                 ctx.quadraticCurveTo(p1.x, p1.y, midX, midY);
                 ctx.stroke();
-                ctx.beginPath();
-                ctx.moveTo(midX, midY);
             }
         });
 
         document.getElementById('penBtn').onclick = () => { mode = 'pen'; updateToolUI(); };
         document.getElementById('eraserBtn').onclick = () => { mode = 'eraser'; updateToolUI(); };
         document.getElementById('clearBtn').onclick = () => { if(confirm("Xóa toàn bộ bảng?")) db.set(null); };
-        db.on('value', snap => { if(!snap.exists()) ctx.clearRect(0, 0, 1000, 1000); });
+        db.on('value', snap => { if(!snap.exists()) { ctx.clearRect(0, 0, 1000, 1000); allStrokes = {}; } });
 
         offsetX = (window.innerWidth - 1000) / 2; offsetY = (window.innerHeight - 1000) / 2;
         updateTransform(); updateToolUI();
